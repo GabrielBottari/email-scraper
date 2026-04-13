@@ -1,0 +1,15 @@
+{
+  "name": "email-scraper",
+  "version": "1.0.0",
+  "description": "Scrape web URLs for email addresses",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "cheerio": "^1.0.0",
+    "node-fetch": "^3.3.2",
+    "puppeteer": "^24.40.0"
+  }
+}
