@@ -7,6 +7,11 @@ const EMAIL_REGEX = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
 const MAX_PAGES = 25;
 const CONCURRENCY = 10;
 
+const PRIMARY_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+const FALLBACK_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:122.0) Gecko/20100101 Firefox/122.0";
+
 // Placeholder / example domains
 const PLACEHOLDER_DOMAINS = new Set([
   "example.com",
@@ -83,29 +88,35 @@ function normalizeUrl(href, base) {
   }
 }
 
-async function fetchWithFallback(url) {
-  const res = await fetch(url, {
-    headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    },
+async function fetchWithUa(url, ua) {
+  return fetch(url, {
+    headers: { "User-Agent": ua },
     redirect: "follow",
-    signal: AbortSignal.timeout(10000),
+    signal: AbortSignal.timeout(20000),
   });
-  return res;
 }
 
 async function fetchPage(url) {
   let res;
   try {
-    res = await fetchWithFallback(url);
+    res = await fetchWithUa(url, PRIMARY_UA);
   } catch (err) {
     // If HTTPS fails, retry with HTTP
     if (url.startsWith("https://")) {
       const httpUrl = url.replace("https://", "http://");
-      res = await fetchWithFallback(httpUrl);
+      res = await fetchWithUa(httpUrl, PRIMARY_UA);
     } else {
       throw err;
+    }
+  }
+
+  // Some servers block the Chrome UA; retry once with a Firefox UA on 403.
+  if (res.status === 403) {
+    try {
+      const retry = await fetchWithUa(url, FALLBACK_UA);
+      if (retry.ok) res = retry;
+    } catch {
+      // keep original 403
     }
   }
 
@@ -164,10 +175,26 @@ function isValidEmail(email) {
   return true;
 }
 
+function decodeCfEmail(hex) {
+  if (!hex || hex.length < 4 || hex.length % 2 !== 0) return null;
+  const key = parseInt(hex.slice(0, 2), 16);
+  let email = "";
+  for (let i = 2; i < hex.length; i += 2) {
+    email += String.fromCharCode(parseInt(hex.slice(i, i + 2), 16) ^ key);
+  }
+  return email;
+}
+
 function extractEmails($) {
   $("script, style").remove();
 
   const emails = new Set();
+
+  // Cloudflare email obfuscation: <a data-cfemail="..."> or any [data-cfemail]
+  $("[data-cfemail]").each((_, el) => {
+    const decoded = decodeCfEmail($(el).attr("data-cfemail"));
+    if (decoded) emails.add(decoded.toLowerCase());
+  });
 
   $('a[href^="mailto:"]').each((_, el) => {
     const mailto = $(el).attr("href");
@@ -219,17 +246,15 @@ async function fetchPageWithBrowser(url) {
   const browser = await getBrowser();
   const page = await browser.newPage();
   try {
-    await page.setUserAgent(
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    );
+    await page.setUserAgent(PRIMARY_UA);
 
     try {
-      await page.goto(url, { waitUntil: "networkidle2", timeout: 15000 });
+      await page.goto(url, { waitUntil: "networkidle2", timeout: 30000 });
     } catch (err) {
       // If HTTPS fails in the browser, retry with HTTP
       if (url.startsWith("https://")) {
         const httpUrl = url.replace("https://", "http://");
-        await page.goto(httpUrl, { waitUntil: "networkidle2", timeout: 15000 });
+        await page.goto(httpUrl, { waitUntil: "networkidle2", timeout: 30000 });
       } else {
         throw err;
       }
